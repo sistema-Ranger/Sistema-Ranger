@@ -2,7 +2,7 @@
 """Fixtures comunes: BD de prueba `<POSTGRES_DB>_test` migrada con Alembic y limpiada por test."""
 
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +23,9 @@ import app as app_pkg  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models import User, UserRole  # noqa: E402
+from app.security.hashing import hash_password  # noqa: E402
+from app.security.jwt import create_access_token  # noqa: E402
 
 BACK_DIR = Path(app_pkg.__file__).resolve().parents[1]
 
@@ -76,3 +79,36 @@ def client(db: Session) -> Iterator[TestClient]:
     # Sin context manager: no se ejecuta el lifespan (seed) contra la BD de desarrollo.
     yield TestClient(app)
     app.dependency_overrides.clear()
+
+
+TEST_PASSWORD = "secret123"
+
+
+@pytest.fixture
+def make_user(db: Session) -> Callable[..., User]:
+    def _make(role: UserRole = UserRole.viewer, email: str | None = None) -> User:
+        user = User(
+            email=email or f"{role.value}-{db.query(User).count()}@ranger.test",
+            full_name=f"Usuario {role.value}",
+            password_hash=hash_password(TEST_PASSWORD),
+            role=role,
+        )
+        db.add(user)
+        db.commit()
+        return user
+
+    return _make
+
+
+@pytest.fixture
+def auth_headers(make_user: Callable[..., User]) -> Callable[[UserRole], dict[str, str]]:
+    def _headers(role: UserRole = UserRole.admin) -> dict[str, str]:
+        user = make_user(role)
+        return {"Authorization": f"Bearer {create_access_token(user.id, role.value)}"}
+
+    return _headers
+
+
+@pytest.fixture
+def collector_headers() -> dict[str, str]:
+    return {"X-Collector-Key": get_settings().collector_api_key}
