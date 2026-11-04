@@ -37,6 +37,7 @@ build/
 
 .vscode/
 .idea/
+.docs/
 
 # ==============================
 # Sistema operativo

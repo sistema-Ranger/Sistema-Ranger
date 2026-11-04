@@ -1,0 +1,933 @@
+% DOCS/10-BACKEND-TECNICO.tex
+% Documentación técnica del backend de Ranger.
+% Compilar con: pdflatex 10-BACKEND-TECNICO.tex (dos veces, para el índice)
+
+\documentclass[11pt,a4paper]{article}
+
+% ---------- Paquetes ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands,es-tabla]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+% ---------- Estilo ----------
+\definecolor{primario}{HTML}{1F5F8B}
+\definecolor{gris}{HTML}{6B6B6B}
+\definecolor{fondo}{HTML}{F2F2F0}
+\definecolor{borde}{HTML}{E4E4E0}
+
+\hypersetup{colorlinks=true,linkcolor=primario,urlcolor=primario}
+
+% Robustos: se pueden usar en títulos de sección (índice) con guiones bajos
+\DeclareRobustCommand{\code}[1]{\texttt{\detokenize{#1}}}
+\DeclareRobustCommand{\ruta}[1]{\textcolor{primario}{\texttt{\detokenize{#1}}}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parskip}{4pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{fondo},
+  frame=single,
+  rulecolor=\color{borde},
+  framesep=4pt,
+  xleftmargin=6pt,
+  xrightmargin=6pt,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  keywordstyle=\color{primario}\bfseries,
+  commentstyle=\color{gris}\itshape,
+  literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1
+           {ñ}{{\~n}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Ó}{{\'O}}1
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{gris}{Ranger · Documentación técnica del backend}}
+\fancyhead[R]{\small\textcolor{gris}{ITLA · Proyecto Final TDS}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---------- Portada ----------
+\title{
+  \vspace{-1cm}
+  {\Huge\bfseries\textcolor{primario}{Ranger}}\\[4pt]
+  {\Large Sistema de monitoreo y predicción de fallos}\\[14pt]
+  {\Large Documentación técnica del backend}
+}
+\author{
+  Anyi Rafelina Rodríguez Dotel (2024-0022)\\
+  Josué Fondeur Román (2024-0193)\\[6pt]
+  \small Docentes: Willis Ezequiel Polanco · Eduandy Isabel Cruz\\
+  \small Instituto Tecnológico de Las Américas (ITLA)
+}
+\date{Octubre 2026}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+Este documento describe el backend de Ranger tal como quedó implementado en la semana 4 del
+proyecto: la API REST construida con FastAPI, la capa de servicios con la lógica de negocio,
+el modelo de datos sobre PostgreSQL 16, la seguridad basada en JWT y API key, el worker de
+análisis que calcula el riesgo y genera alertas inteligentes, y el recolector que alimenta el
+sistema con métricas y eventos. Para cada componente se explica su responsabilidad, los
+archivos que lo implementan y las decisiones de diseño más relevantes.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Introducción}
+% =====================================================================
+
+Ranger recolecta métricas, logs y eventos de hosts; los almacena; detecta anomalías con reglas
+y aprendizaje automático; estima un nivel de riesgo y genera \textbf{alertas priorizadas con
+evidencia y acción sugerida}. El backend es la pieza central del sistema: es el único
+componente que escribe datos de dominio provenientes del exterior y el que expone toda la
+información al frontend.
+
+\subsection{Alcance de esta entrega}
+
+\begin{itemize}
+  \item API REST completa según el contrato \code{05-API-CONTRATOS.md} (prefijo \code{/api/v1}).
+  \item Modelo de datos completo de \code{04-MODELO-DE-DATOS.md}, versionado con Alembic.
+  \item Autenticación JWT, autorización por rol y autenticación de recolectores por API key.
+  \item Ingesta por lotes de métricas y eventos.
+  \item Consultas: métricas crudas y agregadas, eventos con búsqueda, alertas, reglas,
+        incidentes, dashboard, predicciones y reportes con exportación CSV.
+  \item Worker de análisis periódico: features, score de riesgo, motor de alertas con
+        deduplicación, cooldown, escalado y autorresolución.
+  \item Recolector con escenarios de fallo simulados.
+  \item 84 pruebas automatizadas con 96\,\% de cobertura.
+\end{itemize}
+
+Queda fuera de esta entrega el entrenamiento del modelo de Machine Learning (semanas 6--7). El
+worker ya está preparado para cargarlo; mientras no exista, opera con reglas y z-score
+estadístico.
+
+\subsection{Tecnologías}
+
+\begin{center}
+\begin{tabular}{L{4cm}L{10.5cm}}
+\toprule
+\textbf{Componente} & \textbf{Tecnología} \\
+\midrule
+Lenguaje & Python 3.11 \\
+Framework web & FastAPI 0.115 + Uvicorn \\
+ORM y migraciones & SQLAlchemy 2.0 (estilo \code{Mapped}) + Alembic \\
+Base de datos & PostgreSQL 16 con la extensión \code{pg_trgm} \\
+Validación & Pydantic v2 + pydantic-settings \\
+Seguridad & python-jose (JWT HS256), bcrypt \\
+Procesamiento & pandas, NumPy, scikit-learn, joblib \\
+Planificación & APScheduler (\code{BlockingScheduler}) \\
+Pruebas y calidad & pytest, httpx (\code{TestClient}), pytest-cov, ruff \\
+Infraestructura & Docker + Docker Compose, GitHub Actions \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Arquitectura}
+% =====================================================================
+
+\subsection{Contenedores}
+
+En desarrollo el sistema se levanta con Docker Compose y cuatro servicios del backend:
+
+\begin{center}
+\begin{tabular}{L{2.6cm}L{3.4cm}L{8.5cm}}
+\toprule
+\textbf{Servicio} & \textbf{Contenedor} & \textbf{Responsabilidad} \\
+\midrule
+\code{db} & \code{ranger-db} & PostgreSQL 16, volumen \code{pgdata}, ejecuta \code{DB/init.sql}. \\
+\code{backend} & \code{ranger-backend} & Aplica las migraciones y sirve la API en el puerto 8000. \\
+\code{worker} & \code{ranger-worker} & Misma imagen que el backend; ejecuta el ciclo de análisis cada 60\,s. \\
+\code{collector} & \code{ranger-collector} & Agente psutil que envía métricas y eventos a la API. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  node distance=1.2cm and 1.6cm,
+  caja/.style={draw=primario, thick, rounded corners=4pt, fill=white,
+               minimum width=3.1cm, minimum height=1cm, align=center, font=\small},
+  bd/.style={draw=primario, thick, cylinder, shape border rotate=90, aspect=0.25,
+             fill=white, minimum width=2.6cm, minimum height=1.3cm, align=center, font=\small},
+  flecha/.style={-{Stealth[length=2.5mm]}, thick, color=gris},
+  etiqueta/.style={font=\scriptsize, color=gris, align=center}
+]
+  \node[caja] (front) {Frontend\\React};
+  \node[caja, right=of front] (back) {Backend\\FastAPI :8000};
+  \node[caja, right=of back] (col) {Recolector\\psutil};
+  \node[bd, below=of back] (db) {PostgreSQL 16};
+  \node[caja, left=of db] (wk) {Worker\\APScheduler};
+  \node[caja, right=of db] (ml) {\code{ml/src}\\features};
+
+  \draw[flecha] (front) -- node[etiqueta, above] {REST\\JWT} (back);
+  \draw[flecha] (col) -- node[etiqueta, above] {\code{/ingest}\\API key} (back);
+  \draw[flecha] (back) -- node[etiqueta, right] {SQL} (db);
+  \draw[flecha] (wk) -- node[etiqueta, above] {SQL} (db);
+  \draw[flecha, dashed] (wk.south) to[bend right=25] node[etiqueta, below] {importa} (ml.south);
+\end{tikzpicture}
+\caption{Contenedores y flujos principales.}
+\end{figure}
+
+\subsection{Capas del backend}
+
+El código sigue una arquitectura por capas. Cada capa solo conoce a la siguiente:
+
+\begin{enumerate}
+  \item \textbf{Routers (controladores)} --- \ruta{BACK/app/routers/}. Declaran los endpoints,
+        los parámetros, el schema de respuesta y la dependencia de rol. No contienen lógica de
+        negocio ni consultas SQL: delegan en un servicio.
+  \item \textbf{Schemas} --- \ruta{BACK/app/schemas/}. Modelos Pydantic de entrada y salida
+        (\code{XxxCreate}, \code{XxxUpdate}, \code{XxxRead}). Validan tipos, rangos y
+        tamaños de lote.
+  \item \textbf{Servicios} --- \ruta{BACK/app/services/}. Lógica de negocio y consultas con el
+        ORM. Lanzan \code{AppError} con un código de error de dominio.
+  \item \textbf{Modelos} --- \ruta{BACK/app/models/}. Entidades SQLAlchemy que reflejan
+        exactamente el DDL de \code{04}.
+  \item \textbf{Seguridad} --- \ruta{BACK/app/security/}. Hashing, JWT, dependencias de rol y
+        API key; se inyectan con \code{Depends}.
+\end{enumerate}
+
+Flujo de una petición típica:
+
+\begin{lstlisting}
+Cliente -> Router (valida schema + rol) -> Servicio (lógica + ORM)
+        -> PostgreSQL -> Servicio -> Router (response_model) -> JSON
+\end{lstlisting}
+
+% =====================================================================
+\section{Estructura del código}
+% =====================================================================
+
+\begin{lstlisting}
+BACK/
+|-- Dockerfile               # imagen python:3.11-slim; migra y arranca uvicorn
+|-- requirements.txt
+|-- alembic.ini
+|-- alembic/
+|   |-- env.py               # toma la URL de app.config
+|   `-- versions/            # migración inicial (esquema completo de 04)
+`-- app/
+    |-- main.py              # FastAPI, CORS, /health, lifespan (seed)
+    |-- config.py            # Settings (pydantic-settings)
+    |-- database.py          # engine, SessionLocal, Base, get_db
+    |-- errors.py            # AppError y manejadores {detail, code}
+    |-- models/              # 9 entidades + enums
+    |-- schemas/             # common, user, host, metric, ingest, query, prediction
+    |-- routers/             # 12 routers
+    |-- services/            # 17 módulos de lógica de negocio
+    |-- security/            # hashing, jwt, deps, api_key
+    `-- worker/              # scheduler, jobs, model
+ml/src/features.py           # pipeline de features compartido
+COLLECTOR/                   # collector.py, scenarios.py
+TEST/                        # conftest, factories, api/, back/, ml/, integration/
+\end{lstlisting}
+
+% =====================================================================
+\section{Configuración y base de datos}
+% =====================================================================
+
+\subsection{Configuración (\code{config.py})}
+
+La clase \code{Settings} lee las variables de entorno (archivo \code{.env}). Los secretos
+\textbf{no tienen valor por defecto}: si faltan, la aplicación no arranca. Se accede siempre
+mediante \code{get_settings()}, que se cachea con \code{lru_cache}.
+
+\begin{longtable}{L{5.2cm}L{2.4cm}L{7cm}}
+\toprule
+\textbf{Variable} & \textbf{Defecto} & \textbf{Uso} \\
+\midrule
+\endhead
+\code{DATABASE_URL} & --- & Conexión SQLAlchemy (\code{postgresql+psycopg://...}). \\
+\code{TEST_DATABASE_URL} & derivada & BD de pruebas; por defecto \code{<db>_test}. \\
+\code{APP_ENV} & \code{development} & Nivel de log (DEBUG en desarrollo). \\
+\code{CORS_ORIGINS} & \code{localhost:5173} & Orígenes permitidos, separados por coma. \\
+\code{JWT_SECRET} & --- & Clave de firma de los tokens. \\
+\code{JWT_EXPIRE_MINUTES} & 480 & Vigencia del token. \\
+\code{COLLECTOR_API_KEY} & --- & Clave que deben enviar los recolectores. \\
+\code{ADMIN_EMAIL}, \code{ADMIN_PASSWORD} & --- & Usuario administrador inicial. \\
+\code{ANALYSIS_INTERVAL_SECONDS} & 60 & Periodo del ciclo del worker. \\
+\code{ALERT_COOLDOWN_MINUTES} & 15 & Cooldown tras resolver una alerta. \\
+\code{COLLECT_INTERVAL} & 10 & Intervalo del recolector; define cuándo un host está caído. \\
+\code{MODEL_DIR} & \code{/code/ml/models} & Carpeta de artefactos \code{.joblib}. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Conexión (\code{database.py})}
+
+Define el \code{engine} (con \code{pool_pre_ping}), la fábrica \code{SessionLocal}, la clase
+\code{Base} declarativa (que mapea \code{datetime} a \code{timestamptz}) y la dependencia
+\code{get_db()}, que abre una sesión por petición y la cierra al terminar.
+
+\subsection{Migraciones (Alembic)}
+
+El esquema lo crea Alembic (ADR-07 aceptada). La migración inicial se generó con
+\code{--autogenerate} a partir de los modelos y se completó a mano con la creación de la
+extensión \code{pg_trgm} y el borrado de los tipos \code{ENUM} en el \code{downgrade}. El
+contenedor \code{backend} ejecuta \code{alembic upgrade head} antes de iniciar Uvicorn.
+\code{DB/init.sql} solo crea la extensión.
+
+Una prueba (\code{test_migration_matches_models}) compara la base migrada con los modelos
+mediante \code{compare_metadata}: si alguien cambia un modelo sin crear la migración, la
+prueba falla.
+
+\subsection{Seed inicial (\code{services/seed.py})}
+
+Al arrancar la API (\code{lifespan} de \code{main.py}) se ejecuta \code{seed_defaults}, que es
+idempotente:
+
+\begin{itemize}
+  \item crea el usuario \code{admin} con \code{ADMIN_EMAIL}/\code{ADMIN_PASSWORD} si no existe;
+  \item crea las cinco reglas por defecto si la tabla \code{alert_rules} está vacía.
+\end{itemize}
+
+\begin{center}
+\begin{tabular}{L{4.3cm}L{3.8cm}cccc}
+\toprule
+\textbf{Regla} & \textbf{Métrica} & \textbf{Op.} & \textbf{Umbral} & \textbf{Dur.} & \textbf{Sev.} \\
+\midrule
+CPU alta sostenida & \code{cpu_percent} & $>$ & 90 & 5 & high \\
+RAM alta & \code{mem_percent} & $>$ & 85 & 0 & medium \\
+Disco libre bajo & \code{disk_free_percent} & $<$ & 10 & 0 & high \\
+Riesgo del modelo alto & \code{risk_score} & $\geq$ & 0.6 & 0 & high \\
+Ráfaga de errores & \code{events_error_count} & $\geq$ & 20 & 5 & medium \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Modelo de datos}
+% =====================================================================
+
+Los modelos (\ruta{BACK/app/models/}) usan SQLAlchemy 2.0 con \code{Mapped[...]} y
+\code{mapped_column}, y reflejan exactamente el DDL de \code{04}: nombres, tipos
+(\code{INET}, \code{REAL[]}, \code{JSONB}, \code{DOUBLE PRECISION}), valores por defecto e
+índices, incluidos el índice trigram de mensajes y el índice único parcial de deduplicación.
+
+\begin{longtable}{L{3.2cm}L{2.9cm}L{8.4cm}}
+\toprule
+\textbf{Clase} & \textbf{Tabla} & \textbf{Descripción} \\
+\midrule
+\endhead
+\code{User} & \code{users} & Usuarios con rol, estado y último acceso. \\
+\code{Host} & \code{hosts} & Servidores, aplicaciones, servicios o bases de datos monitoreados. \\
+\code{Metric} & \code{metrics} & Una fila por lectura del recolector (CPU, RAM, disco, red, latencia, errores, disponibilidad). \\
+\code{Event} & \code{events} & Logs y eventos con nivel, origen, mensaje y \code{fingerprint}. \\
+\code{AlertRule} & \code{alert_rules} & Reglas de umbral configurables, globales o por host. \\
+\code{ModelRegistry} & \code{model_registry} & Versiones del modelo ML con sus métricas de evaluación. \\
+\code{Prediction} & \code{predictions} & Resultado de cada ciclo del worker por host. \\
+\code{Alert} & \code{alerts} & Alertas con evidencia, tendencia, riesgo, acción sugerida y \code{dedup_key}. \\
+\code{Incident} & \code{incidents} & Incidentes con causa raíz y resolución. \\
+--- & \code{incident_alerts} & Tabla puente N:M entre incidentes y alertas. \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Enums.} \code{enums.py} define \code{UserRole}, \code{HostKind}, \code{HostStatus},
+\code{EventLevel}, \code{SeverityLevel}, \code{AlertStatus}, \code{AlertOrigin},
+\code{RuleOperator} e \code{IncidentStatus} como \code{str, Enum}, mapeados a los tipos
+\code{ENUM} de PostgreSQL. El orden de \code{severity_level} (low $<$ medium $<$ high $<$
+critical) permite ordenar por severidad directamente en SQL. \code{SEVERITY_ORDER} da ese
+mismo orden en Python para el escalado.
+
+\paragraph{Propiedades de conveniencia.} \code{Alert}, \code{Event}, \code{Prediction} e
+\code{Incident} exponen una propiedad \code{hostname} a partir de su relación con
+\code{Host}, para que los schemas de respuesta la incluyan sin consultas manuales.
+
+% =====================================================================
+\section{Schemas (Pydantic)}
+% =====================================================================
+
+\begin{longtable}{L{3.2cm}L{11.3cm}}
+\toprule
+\textbf{Módulo} & \textbf{Contenido} \\
+\midrule
+\endhead
+\code{common.py} & \code{Page[T]} (\code{items, total, page, size}) y el tipo \code{Email} (normalizado a minúsculas). \\
+\code{user.py} & \code{UserCreate}, \code{UserUpdate}, \code{UserRead}, \code{Token}. La contraseña nunca se devuelve. \\
+\code{host.py} & \code{HostCreate}, \code{HostUpdate}, \code{HostRead}, \code{HostDetail} (con última métrica y último riesgo). \code{ip_address} se valida como IP y se serializa como texto. \\
+\code{metric.py} & \code{MetricReading}, \code{MetricsBatch} (1 a 500 lecturas), \code{MetricRead}. Porcentajes en 0--100, valores no negativos; fechas sin zona horaria se interpretan como UTC. \\
+\code{ingest.py} & \code{IngestRegister}, \code{EventIn}, \code{EventsBatch} (1 a 500 eventos) y las respuestas \code{{host_id}} y \code{{accepted}}. \\
+\code{query.py} & Lectura: \code{MetricAggregate}, \code{EventRead}, \code{AlertRead}, reglas, incidentes, \code{DashboardOverview} y \code{AvailabilityReport}. \\
+\code{prediction.py} & \code{PredictionLatest}, \code{PredictionPoint}, \code{PredictionSummary}, \code{ModelRead}. \\
+\bottomrule
+\end{longtable}
+
+Los schemas de creación incluyen un ejemplo (\code{json_schema_extra}) que aparece en Swagger
+(\code{/docs}).
+
+% =====================================================================
+\section{Seguridad}
+% =====================================================================
+
+\subsection{Contraseñas y JWT}
+
+\begin{itemize}
+  \item \code{security/hashing.py}: \code{hash_password} y \code{verify_password} con
+        \textbf{bcrypt} (se usa \code{bcrypt} directamente porque \code{passlib} está sin
+        mantenimiento y falla con bcrypt $\geq$ 4.1).
+  \item \code{security/jwt.py}: \code{create_access_token} firma un token HS256 con
+        \code{sub} (id del usuario), \code{role} y \code{exp}. \code{decode_access_token}
+        devuelve \code{None} si el token es inválido o expiró.
+\end{itemize}
+
+\subsection{Dependencias de autorización (\code{security/deps.py})}
+
+\code{get_current_user} extrae el token \code{Bearer}, lo valida y carga el usuario: si falta,
+es inválido o el usuario está inactivo, responde \code{401}. \code{require_roles(*roles)}
+devuelve una dependencia que responde \code{403} si el rol del usuario no está permitido.
+Los grupos de roles implementan la matriz de permisos de \code{05}:
+
+\begin{center}
+\begin{tabular}{L{3.6cm}L{6.4cm}L{4.5cm}}
+\toprule
+\textbf{Constante} & \textbf{Roles} & \textbf{Uso típico} \\
+\midrule
+\code{ADMIN} & admin & Usuarios, activar modelo, borrar hosts \\
+\code{ADMIN_INFRA} & admin, infra & Escritura de hosts, reglas, alertas e incidentes \\
+\code{NOT_VIEWER} & admin, infra, developer, analyst & Métricas, eventos, reglas, predicciones \\
+\code{EXPORTERS} & admin, infra, analyst & Exportaciones CSV \\
+\code{REPORT_READERS} & admin, infra, analyst, viewer & Reporte de disponibilidad \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{API key de recolectores (\code{security/api_key.py})}
+
+Todos los endpoints \code{/ingest/*} exigen la cabecera \code{X-Collector-Key}. La comparación
+usa \code{secrets.compare_digest} para evitar ataques de tiempo. Si la clave falta o no
+coincide, responde \code{401 INVALID_API_KEY}.
+
+% =====================================================================
+\section{Controladores (routers)}
+% =====================================================================
+
+Todos los routers se registran en \code{routers/__init__.py} bajo el prefijo \code{/api/v1}.
+\code{GET /health} queda fuera del prefijo. Las listas paginadas aceptan \code{page} y
+\code{size} y devuelven \code{{items, total, page, size}}. Los parámetros \code{from}/\code{to}
+aceptan ISO-8601 o expresiones relativas (\code{now}, \code{now-15m}, \code{now-6h},
+\code{now-7d}).
+
+\newcommand{\endpoints}[1]{%
+\begin{longtable}{L{1.4cm}L{5.4cm}L{2.8cm}L{4.9cm}}
+\toprule
+\textbf{Método} & \textbf{Ruta} & \textbf{Rol} & \textbf{Descripción} \\
+\midrule
+\endhead
+#1
+\bottomrule
+\end{longtable}}
+
+\subsection{Autenticación (\code{auth.py})}
+\endpoints{
+POST & \ruta{/auth/login} & público & Formulario \code{username} (email) + \code{password} $\rightarrow$ \code{{access_token, token_type, user}}; actualiza \code{last_login_at}. \\
+GET & \ruta{/auth/me} & autenticado & Usuario actual. \\
+}
+
+\subsection{Usuarios (\code{users.py})}
+\endpoints{
+GET & \ruta{/users} & admin & Listado paginado. \\
+POST & \ruta{/users} & admin & Crea usuario; \code{409 EMAIL_TAKEN} si el email existe. \\
+PATCH & \ruta{/users/{user_id}} & admin & Cambia nombre, rol o \code{is_active}. \\
+DELETE & \ruta{/users/{user_id}} & admin & Desactivación lógica (soft delete). \\
+}
+Un administrador no puede desactivarse ni cambiar su propio rol (\code{400 SELF_MODIFICATION}).
+
+\subsection{Hosts (\code{hosts.py})}
+\endpoints{
+GET & \ruta{/hosts} & autenticado & Paginado; filtros \code{environment}, \code{area}, \code{status}, \code{kind}, \code{is_active}. \\
+GET & \ruta{/hosts/{host_id}} & autenticado & Detalle + última métrica + última predicción. \\
+POST & \ruta{/hosts} & admin, infra & Registro manual; \code{409 HOSTNAME_TAKEN}. \\
+PATCH & \ruta{/hosts/{host_id}} & admin, infra & Edita metadatos. \\
+DELETE & \ruta{/hosts/{host_id}} & admin & Desactiva el host. \\
+}
+
+\subsection{Ingesta (\code{ingest.py})}
+\endpoints{
+POST & \ruta{/ingest/register} & API key & Upsert del host por \code{hostname} $\rightarrow$ \code{{host_id}}. \\
+POST & \ruta{/ingest/metrics} & API key & Lote de lecturas (máx. 500) $\rightarrow$ \code{202 {accepted}}. \\
+POST & \ruta{/ingest/events} & API key & Lote de eventos (máx. 500) $\rightarrow$ \code{202 {accepted}}. \\
+}
+
+\subsection{Métricas (\code{metrics.py})}
+\endpoints{
+GET & \ruta{/metrics} & no viewer & Lecturas crudas en orden cronológico; \code{host_id}, \code{from}, \code{to}, \code{limit} $\leq$ 5000. \\
+GET & \ruta{/metrics/latest} & no viewer & Última lectura por host activo. \\
+GET & \ruta{/metrics/aggregate} & no viewer & \code{metric}, \code{bucket} (minute, hour, day) $\rightarrow$ \code{[{period, avg, min, max, samples, alerts}]}. \\
+GET & \ruta{/metrics/export.csv} & exporters & Mismo agregado en CSV descargable. \\
+}
+
+\subsection{Eventos (\code{events.py})}
+\endpoints{
+GET & \ruta{/events} & no viewer & Búsqueda \code{q} (ILIKE con índice trigram), \code{host_id}, \code{level} (repetible), \code{source}, \code{from}, \code{to}; paginado. \\
+GET & \ruta{/events/summary} & no viewer & \code{{info, warning, error, critical}} con los mismos filtros salvo \code{level}. \\
+}
+
+\subsection{Reglas de alerta (\code{alert_rules.py})}
+\endpoints{
+GET & \ruta{/alert-rules} & no viewer & Lista de reglas. \\
+POST & \ruta{/alert-rules} & admin, infra & Nueva regla; valida la métrica y que el host exista. \\
+PATCH & \ruta{/alert-rules/{rule_id}} & admin, infra & Edita una regla. \\
+DELETE & \ruta{/alert-rules/{rule_id}} & admin, infra & Elimina una regla (\code{204}). \\
+}
+
+\subsection{Alertas (\code{alerts.py})}
+\endpoints{
+GET & \ruta{/alerts} & autenticado & Filtros \code{status}, \code{severity}, \code{origin}, \code{host_id}, rango; orden por severidad, riesgo y fecha. \\
+GET & \ruta{/alerts/summary} & autenticado & Conteo de alertas activas por severidad. \\
+GET & \ruta{/alerts/{alert_id}} & autenticado & Detalle con \code{evidence}, \code{trend}, \code{situation}, \code{suggested_action}. \\
+POST & \ruta{/alerts/{alert_id}/acknowledge} & admin, infra & Marca \code{acknowledged}; \code{400} si ya está resuelta. \\
+POST & \ruta{/alerts/{alert_id}/resolve} & admin, infra & Marca \code{resolved}. \\
+}
+
+\subsection{Incidentes (\code{incidents.py})}
+\endpoints{
+GET & \ruta{/incidents} & autenticado & Filtros \code{status}, \code{severity}, \code{host_id}; paginado. \\
+POST & \ruta{/incidents} & admin, infra & Crea un incidente; \code{alert_ids} opcional para vincular alertas. \\
+GET & \ruta{/incidents/{incident_id}} & autenticado & Detalle con alertas vinculadas. \\
+PATCH & \ruta{/incidents/{incident_id}} & admin, infra & Estado, causa raíz, resolución, asignado, alertas. \\
+}
+
+\subsection{Predicciones y modelo (\code{predictions.py})}
+\endpoints{
+GET & \ruta{/predictions/latest} & no viewer & Última predicción por host. \\
+GET & \ruta{/predictions} & no viewer & Serie de riesgo en el tiempo (24\,h por defecto). \\
+GET & \ruta{/predictions/summary} & autenticado & \code{{current_risk_level, risk_score, failure_probability, anomalies_today}}. \\
+GET & \ruta{/models/active} & autenticado & Modelo activo o \code{null}. \\
+POST & \ruta{/models/{model_id}/activate} & admin & Activa una versión y desactiva las demás. \\
+}
+
+\subsection{Dashboard y reportes (\code{dashboard.py}, \code{reports.py})}
+\endpoints{
+GET & \ruta{/dashboard/overview} & autenticado & \code{host_id}, \code{range} (1h, 6h, 24h, 7d) $\rightarrow$ KPIs con tendencia, serie, riesgo global, 5 alertas recientes y hosts. \\
+GET & \ruta{/reports/availability} & report readers & Disponibilidad \% por host y MTTR de incidentes (7 días por defecto). \\
+GET & \ruta{/reports/availability.csv} & exporters & Exportación CSV. \\
+}
+
+% =====================================================================
+\section{Servicios}
+% =====================================================================
+
+Los servicios concentran la lógica de negocio. Reciben la sesión de base de datos y datos ya
+validados, y devuelven entidades ORM o diccionarios que el router serializa.
+
+\begin{longtable}{L{3.3cm}L{11.2cm}}
+\toprule
+\textbf{Servicio} & \textbf{Responsabilidad} \\
+\midrule
+\endhead
+\code{users.py} & Autenticación (email normalizado, usuario activo, verificación bcrypt), CRUD y reglas contra la auto-modificación. \\
+\code{hosts.py} & CRUD de hosts, búsqueda por hostname y detalle con la última métrica y la última predicción. \\
+\code{ingest.py} & Upsert del host al registrarse; inserción por lotes de métricas y eventos; actualiza \code{last_seen_at} (hora del servidor) y marca \code{up}/\code{down} según \code{is_available}. Calcula el \code{fingerprint} de cada evento. \\
+\code{metrics.py} & Lecturas crudas, última lectura por host (\code{DISTINCT ON}), agregación con \code{date_trunc} y conteo de alertas por periodo, generación de CSV. \\
+\code{events.py} & \code{EventFilters} reutilizable: búsqueda ILIKE con escape de comodines, filtro multinivel, paginación y conteo por nivel. \\
+\code{alert_rules.py} & CRUD de reglas con validación del host. \\
+\code{alerts.py} & Listado priorizado, resumen por severidad, reconocer y resolver. \\
+\code{incidents.py} & Alta y edición de incidentes, vínculo con alertas, deducción del host y gestión de \code{closed_at}. \\
+\code{dashboard.py} & KPIs promedio, serie con \code{date_bin} (30 puntos), riesgo global (peor predicción), alertas recientes y estado de hosts. \\
+\code{reports.py} & Disponibilidad (\code{AVG(is_available)}), MTTR (\code{closed_at - opened_at}) y CSV. \\
+\code{predictions.py} & Serie de predicciones, resumen, modelo activo y activación de versión. \\
+\code{timeutil.py} & Parseo de fechas absolutas y relativas, dependencia \code{TimeRange} y rangos del dashboard. \\
+\code{pagination.py} & \code{paginate()}: conteo total con subconsulta, \code{LIMIT}/\code{OFFSET}. \\
+\code{seed.py} & Admin y reglas por defecto. \\
+\code{risk.py} & Fórmula del score de riesgo, niveles, escalado y ajuste por contexto. \\
+\code{correlation.py} & Evidencia legible, tendencia, situaciones de cuello de botella y acciones sugeridas. \\
+\code{alert_engine.py} & Evaluación de reglas, señales y ciclo de vida de las alertas. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Fingerprint de eventos}
+
+Para agrupar mensajes repetidos, \code{normalize_message} pasa el texto a minúsculas y
+reemplaza UUIDs, direcciones IP, valores hexadecimales y números por marcadores
+(\code{<uuid>}, \code{<ip>}, \code{<hex>}, \code{<n>}). El fingerprint es el SHA-256 de
+\code{source + "|" + mensaje normalizado}. Así, \textit{``HTTP 503 GET /orders/12''} y
+\textit{``HTTP 503 GET /orders/99''} quedan en el mismo grupo.
+
+% =====================================================================
+\section{Worker de análisis y motor de alertas}
+% =====================================================================
+
+\subsection{Planificación (\code{worker/scheduler.py})}
+
+El worker corre como un proceso independiente (\code{python -m app.worker.scheduler}) con un
+\code{BlockingScheduler} de APScheduler y dos jobs:
+
+\begin{itemize}
+  \item \code{analyze_all_hosts}: cada \code{ANALYSIS_INTERVAL_SECONDS}, sin ejecuciones
+        superpuestas (\code{max_instances=1}, \code{coalesce=True}).
+  \item \code{cleanup}: diario a las 03:00 UTC; borra predicciones con más de 30 días.
+\end{itemize}
+
+\subsection{Ciclo por host (\code{worker/jobs.py})}
+
+La clase \code{Analyzer} recorre los hosts activos. Cada host se procesa en un
+\code{try/except} propio: si uno falla, se registra el error, se hace \code{rollback} y el
+ciclo continúa con los demás.
+
+\begin{enumerate}
+  \item \textbf{Carga}: métricas de las últimas 24\,h agregadas por minuto en SQL y eventos de
+        los últimos 60\,min.
+  \item \textbf{Datos frescos}: si no hay lecturas en los últimos 5\,min, no se predice; solo
+        se actualiza el estado y se autorresuelven alertas.
+  \item \textbf{Features}: \code{build_features} (ver \S\ref{sec:features}).
+  \item \textbf{Reglas de métricas}: \code{evaluate_metric_rules}.
+  \item \textbf{Scoring}: modelo activo o, si no existe, z-score estadístico.
+  \item \textbf{Riesgo}: \code{combine} + \code{risk_level} + ajuste por contexto.
+  \item \textbf{Predicción}: \code{INSERT} en \code{predictions} con el vector de features.
+  \item \textbf{Reglas de riesgo}: \code{evaluate_risk_rules} con el historial reciente.
+  \item \textbf{Señales}: regla, modelo y correlación.
+  \item \textbf{Alertas}: \code{apply_signals} y \code{auto_resolve}.
+  \item \textbf{Estado del host}: \code{up}, \code{degraded}, \code{down} o \code{unknown}.
+\end{enumerate}
+
+Al final del ciclo, \code{correlate_areas} busca áreas con señales en dos o más hosts.
+
+\subsection{Pipeline de features (\code{ml/src/features.py})}
+\label{sec:features}
+
+La misma función se usa en el worker y se usará en el entrenamiento, para evitar diferencias
+entre ambos (\textit{training/serving skew}).
+
+\begin{enumerate}
+  \item \textbf{Limpieza}: porcentajes recortados a 100 y valores negativos descartados.
+  \item \textbf{Remuestreo} a 1 minuto con \textit{forward-fill} de hasta 2\,min; los huecos
+        mayores se marcan como \code{is_available = 0}.
+  \item \textbf{Cálculo de features} por minuto:
+\end{enumerate}
+
+\begin{center}
+\begin{tabular}{L{3.2cm}L{11.3cm}}
+\toprule
+\textbf{Grupo} & \textbf{Features} \\
+\midrule
+Nivel actual & \code{cpu_percent}, \code{mem_percent}, \code{disk_percent}, \code{net_recv_bps}, \code{net_sent_bps}, \code{latency_ms}, \code{error_rate} \\
+Rolling & \code{mean}, \code{std}, \code{max} a 5, 15 y 60\,min de CPU, RAM y latencia \\
+Tendencia & \code{slope_15m}, \code{slope_60m} de RAM, disco y latencia (regresión lineal vectorizada) \\
+Desviación & \code{zscore_60m}: valor actual frente a la media y desviación de 24\,h (mín. 60 muestras) \\
+Eventos & \code{err_count_5m}, \code{crit_count_5m}, \code{warn_count_15m}, \code{distinct_fingerprints_15m} \\
+Disponibilidad & \code{downtime_minutes_60m} \\
+Contexto & \code{hour_sin}, \code{hour_cos} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+La pendiente se calcula sin bucles con medias móviles:
+\[
+  \text{slope} = \frac{\overline{xy} - \bar{x}\,\bar{y}}{\overline{x^2} - \bar{x}^2},
+\]
+donde $x$ es la posición del minuto, enmascarada donde no hay dato.
+
+\subsection{Score de riesgo (\code{services/risk.py})}
+
+\[
+  \text{risk} = 0.45 \cdot P(\text{fallo}) + 0.35 \cdot \text{anomalía} + 0.20 \cdot \text{reglas}
+\]
+
+\begin{itemize}
+  \item \textbf{reglas}: máxima severidad de las reglas disparadas (low 0.25, medium 0.5,
+        high 0.75, critical 1).
+  \item \textbf{Sin clasificador}: $P(\text{fallo})$ no existe y los pesos se renormalizan:
+        $\text{risk} = (0.35\cdot\text{anomalía} + 0.20\cdot\text{reglas}) / 0.55$.
+  \item \textbf{Anomalía sin modelo}: $\min(1, \max|z| / 4)$; se considera anomalía si
+        $|z| \geq 3$.
+\end{itemize}
+
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+\textbf{risk\_score} & \textbf{Nivel} \\
+\midrule
+$< 0.30$ & low (Bajo) \\
+$0.30$ -- $0.59$ & medium (Medio) \\
+$0.60$ -- $0.79$ & high (Alto) \\
+$\geq 0.80$ & critical (Crítico) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Ajuste por contexto}: en hosts con \code{environment = prod}, si el riesgo se mantiene
+en medio o superior durante tres ciclos seguidos, se sube un nivel.
+
+\subsection{Evaluación de reglas (\code{services/alert_engine.py})}
+
+\begin{itemize}
+  \item \textbf{Métricas} (\code{cpu_percent}, \code{mem_percent}, \code{latency_ms},
+        \code{error_rate}, \code{disk_free_percent} $= 100 - $ \code{disk_percent}): la
+        condición debe cumplirse en \emph{todos} los minutos de los últimos
+        \code{duration_minutes} (mínimo 1) y sin huecos.
+  \item \textbf{\code{events_error_count}}: eventos \code{error} o \code{critical} en los
+        últimos $\max(\text{duración}, 5)$ minutos.
+  \item \textbf{\code{risk_score}}: el riesgo actual y las predicciones de la ventana deben
+        cumplir la condición.
+  \item Las reglas con \code{host_id} solo se aplican a ese host; las demás, a todos.
+\end{itemize}
+
+Cada regla disparada genera una \code{Signal} con título, descripción, evidencia legible
+(p.\,ej. \textit{``95\,\% durante 8 min''}, \textit{``de 180 ms a 620 ms''}), tendencia,
+situación y acción sugerida.
+
+\subsection{Tipos de señal}
+
+\begin{center}
+\begin{tabular}{L{2.4cm}L{12.1cm}}
+\toprule
+\textbf{Origen} & \textbf{Cuándo se genera} \\
+\midrule
+\code{rule} & Una regla se cumple. \\
+\code{model} & El nivel de riesgo es alto o crítico y no se disparó ya una regla de \code{risk_score}. \\
+\code{correlation} (host) & Hay reglas disparadas de dos o más categorías (CPU, RAM, disco, latencia, errores). Con tres o más, la severidad sube un nivel. Incluye los tres errores más frecuentes agrupados por fingerprint. \\
+\code{correlation} (área) & Dos o más hosts del mismo \code{area} tienen señales en el mismo ciclo. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Situaciones y acciones sugeridas (\code{services/correlation.py})}
+
+\begin{longtable}{L{4.6cm}L{4.6cm}L{5.3cm}}
+\toprule
+\textbf{Situación} & \textbf{Heurística} & \textbf{Acción sugerida} \\
+\midrule
+\endhead
+Saturación de CPU & CPU alta y latencia en aumento & Revisar procesos con mayor consumo y picos de tráfico; evaluar escalar recursos \\
+Posible fuga de memoria & Pendiente de RAM positiva y RAM alta o errores OOM & Revisar consumo por proceso, reinicio controlado, analizar heap \\
+Saturación de almacenamiento & Regla de disco libre; ETA $= (100 - \text{disco}) / \text{pendiente}$ & Liberar espacio, revisar rotación de logs, ampliar volumen \\
+Dependencia externa & Latencia y errores en aumento con CPU, RAM y disco normales & Revisar dependencias, pool de conexiones y timeouts \\
+Ráfaga de errores & Reglas de errores & Revisar logs y despliegues recientes \\
+Degradación progresiva & Tres o más categorías, o RAM + latencia + errores & Revisar recursos, errores y conexiones del servicio \\
+\bottomrule
+\end{longtable}
+
+\subsection{Ciclo de vida de una alerta}
+
+\begin{description}
+  \item[Deduplicación] Clave \code{dedup_key = host_id:origin:rule_id|métrica}. Si ya existe
+        una alerta no resuelta con esa clave, se incrementa \code{occurrences} y se actualizan
+        \code{last_seen_at}, la evidencia y el riesgo. Un índice único parcial en PostgreSQL
+        garantiza que no haya dos alertas abiertas con la misma clave.
+  \item[Escalado] Si la nueva severidad es mayor, la alerta sube de severidad. Nunca baja.
+  \item[Cooldown] Si una alerta con la misma clave se resolvió hace menos de
+        \code{ALERT_COOLDOWN_MINUTES}, no se crea una nueva.
+  \item[Autorresolución] Una alerta cuya señal no aparece desde $2.5\times$ el intervalo del
+        worker (es decir, en el tercer ciclo limpio) pasa a \code{resolved}.
+  \item[Manual] Los usuarios infra y admin pueden reconocer (\code{acknowledged}) o resolver
+        alertas desde la API.
+\end{description}
+
+\subsection{Estado del host}
+
+\begin{center}
+\begin{tabular}{L{2.6cm}L{11.9cm}}
+\toprule
+\textbf{Estado} & \textbf{Condición} \\
+\midrule
+\code{unknown} & El host nunca envió datos. \\
+\code{down} & Sin contacto durante más de $3\times$ \code{COLLECT_INTERVAL}, o última lectura no disponible. \\
+\code{degraded} & Riesgo alto o crítico. \\
+\code{up} & En cualquier otro caso. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Carga del modelo (\code{worker/model.py})}
+
+\code{ModelManager} consulta en cada ciclo el modelo activo de \code{model_registry} y solo lo
+recarga si cambió. El artefacto \code{.joblib} es un diccionario con:
+
+\begin{itemize}
+  \item \code{features}: lista ordenada de columnas esperadas;
+  \item \code{classifier}: estimador con \code{predict_proba} $\rightarrow$ $P(\text{fallo})$;
+  \item \code{anomaly_model} (opcional): estimador con \code{score_samples}, p.\,ej.
+        IsolationForest, más \code{anomaly_bounds} para normalizar a 0--1;
+  \item \code{feature_means} y \code{feature_stds} (opcionales) para calcular el factor
+        principal (importancia $\times |z|$).
+\end{itemize}
+
+Si el artefacto no existe o falla al cargar o al puntuar, se registra el error y se usa el
+modo de respaldo (z-score), sin detener el worker.
+
+% =====================================================================
+\section{Recolector}
+% =====================================================================
+
+\code{COLLECTOR/collector.py} es un agente independiente que:
+
+\begin{enumerate}
+  \item se registra con \code{POST /ingest/register} (hostname, sistema operativo, núcleos,
+        memoria, IP);
+  \item cada \code{COLLECT_INTERVAL} segundos lee con psutil la CPU (total y por núcleo), la
+        memoria, las particiones de disco, la red (bytes por segundo entre lecturas) y la
+        latencia hacia \code{/health};
+  \item aplica el escenario configurado y envía métricas y eventos en lotes de hasta 500;
+  \item si la API no responde, guarda los datos en un buffer en memoria (máx. 10\,000) y los
+        reenvía en el siguiente ciclo; si recibe \code{404}, se vuelve a registrar.
+\end{enumerate}
+
+\code{COLLECTOR/scenarios.py} degrada la lectura real de forma progresiva durante
+\code{SCENARIO_RAMP_MINUTES} (30 por defecto). Al llegar al 100\,\% emite un evento
+\code{critical} con \code{source = "scenario"} y \code{attributes.failure = true} (la etiqueta
+para el modelo), simula 3 minutos de caída y reinicia.
+
+\begin{center}
+\begin{tabular}{L{3cm}L{11.5cm}}
+\toprule
+\textbf{Escenario} & \textbf{Efecto} \\
+\midrule
+\code{normal} & Lectura real y eventos informativos ocasionales. \\
+\code{cpu_spike} & CPU hasta 97\,\% y aumento de latencia. \\
+\code{memory_leak} & RAM hasta 98\,\% y errores \textit{OutOfMemoryError}. \\
+\code{disk_fill} & Disco hasta 99.5\,\% y errores \textit{No space left on device}. \\
+\code{error_burst} & \code{error_rate} hasta 25\,\% y ráfagas de HTTP 503. \\
+\code{degradation} & CPU, RAM, latencia (180 $\rightarrow$ 680 ms) y errores combinados. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Manejo de errores}
+% =====================================================================
+
+\code{errors.py} define \code{AppError} (una \code{HTTPException} con \code{code}) y registra
+manejadores para que \emph{todas} las respuestas de error tengan la forma:
+
+\begin{lstlisting}
+{ "detail": "Mensaje legible", "code": "HOST_NOT_FOUND" }
+\end{lstlisting}
+
+\begin{longtable}{cL{5.5cm}L{8cm}}
+\toprule
+\textbf{HTTP} & \textbf{Códigos} & \textbf{Situación} \\
+\midrule
+\endhead
+400 & \code{SELF_MODIFICATION}, \code{INVALID_HOST}, \code{INVALID_USER}, \code{INVALID_ALERT_IDS}, \code{INVALID_RANGE}, \code{ALERT_ALREADY_RESOLVED} & Validación de negocio. \\
+401 & \code{UNAUTHORIZED}, \code{INVALID_CREDENTIALS}, \code{INVALID_API_KEY} & Sin token, token inválido, credenciales o API key incorrectas. \\
+403 & \code{FORBIDDEN} & Rol sin permiso. \\
+404 & \code{USER_NOT_FOUND}, \code{HOST_NOT_FOUND}, \code{ALERT_NOT_FOUND}, \code{RULE_NOT_FOUND}, \code{INCIDENT_NOT_FOUND}, \code{MODEL_NOT_FOUND} & Recurso inexistente. \\
+409 & \code{EMAIL_TAKEN}, \code{HOSTNAME_TAKEN} & Duplicados. \\
+422 & \code{VALIDATION_ERROR}, \code{INVALID_DATE} & Error de schema (\code{detail} conserva la lista de Pydantic) o fecha inválida. \\
+\bottomrule
+\end{longtable}
+
+% =====================================================================
+\section{Pruebas}
+% =====================================================================
+
+Las pruebas usan una base de datos propia (\code{<POSTGRES_DB>_test}). Se recrea y se migra con
+Alembic al inicio de cada sesión de pytest, y las tablas se vacían después de cada prueba.
+\code{TEST/conftest.py} provee los fixtures \code{db}, \code{client}, \code{make_user},
+\code{auth_headers(role)} y \code{collector_headers}. \code{TEST/factories.py} crea hosts,
+métricas, eventos, alertas y predicciones de prueba.
+
+\begin{longtable}{L{5.6cm}L{8.9cm}}
+\toprule
+\textbf{Archivo} & \textbf{Qué verifica} \\
+\midrule
+\endhead
+\code{test_health.py} & \code{/health}. \\
+\code{back/test_schema.py} & Tablas creadas, migración igual a los modelos, índices especiales, seed idempotente. \\
+\code{back/test_security.py} & bcrypt y JWT (validez, expiración, alteración). \\
+\code{back/test_fingerprint.py} & Normalización y agrupación de mensajes. \\
+\code{back/test_scenarios.py} & Rampa, fallo, caída y recuperación de los escenarios. \\
+\code{back/test_alert_engine.py} & Dedup, escalado, cooldown, autorresolución, duración de reglas, reglas de disco, eventos y riesgo. \\
+\code{api/test_auth_users.py} & Login, 401, 403, 409, 422 y CRUD de usuarios. \\
+\code{api/test_hosts_ingest.py} & API key, upsert, lotes, límites, fingerprint, CRUD de hosts. \\
+\code{api/test_metrics_events.py} & Rangos relativos, agregados, CSV, búsqueda y resumen de eventos. \\
+\code{api/test_alerts_incidents.py} & Reglas, priorización de alertas, ack/resolve, ciclo de vida de incidentes. \\
+\code{api/test_dashboard_reports.py} & Dashboard vacío y con datos, disponibilidad y MTTR. \\
+\code{api/test_predictions_api.py} & Predicciones, resumen, modelo activo y activación. \\
+\code{ml/test_features.py} & Pendientes, remuestreo, huecos, rolling, z-score y features de eventos. \\
+\code{ml/test_risk.py} & Umbrales de nivel, fórmula, renormalización, ajuste por contexto. \\
+\code{ml/test_model_contract.py} & El artefacto carga y produce probabilidades en $[0,1]$; respaldo si falta. \\
+\code{integration/test_worker_cycle.py} & Ciclo completo: predicción, alertas correlacionadas, deduplicación, autorresolución, \code{down}, correlación por área y tolerancia a fallos. \\
+\bottomrule
+\end{longtable}
+
+\textbf{Resultado:} 84 pruebas aprobadas. La cobertura total es del 96\,\%, y la de
+\code{app/services} y \code{ml/src} supera el 90\,\% (el objetivo de \code{09} es 70\,\%).
+\code{ruff format} y \code{ruff check} pasan sin errores. El flujo de GitHub Actions
+(\code{.github/workflows/ci.yml}) ejecuta ruff, las migraciones y pytest con un servicio
+PostgreSQL 16 en cada pull request hacia \code{develop} o \code{main}.
+
+% =====================================================================
+\section{Ejecución}
+% =====================================================================
+
+\begin{lstlisting}[language=bash]
+cp .env.example .env              # solo la primera vez
+docker compose up -d --build      # db, backend, worker y collector
+
+# Verificación
+curl http://localhost:8000/health # {"status":"ok"}
+# Swagger: http://localhost:8000/docs   (admin@ranger.local / admin123)
+
+# Pruebas
+docker compose exec backend pytest /code/TEST -q
+
+# Logs y parada
+docker compose logs -f backend worker collector
+docker compose down               # down -v borra también la base de datos
+\end{lstlisting}
+
+Para simular un fallo, se cambia \code{COLLECTOR_SCENARIO} en \code{.env} (por ejemplo,
+\code{degradation}) y se ejecuta \code{docker compose up -d collector}.
+
+% =====================================================================
+\section{Decisiones de diseño relevantes}
+% =====================================================================
+
+El registro completo está en \code{DOCS/DECISIONES.md} (27 entradas). Las más relevantes:
+
+\begin{itemize}
+  \item \textbf{Fechas relativas}: \code{from}/\code{to} aceptan \code{now-15m} además de
+        ISO-8601, como pide la pantalla de Métricas.
+  \item \textbf{Dashboard}: agrega el campo \code{series} para la gráfica de uso de recursos y
+        devuelve \code{null} en el riesgo mientras no haya predicciones.
+  \item \textbf{Permisos}: donde \code{05} se contradice, se aplicó su matriz de permisos (el
+        viewer no ve reglas ni la serie de predicciones).
+  \item \textbf{Riesgo sin modelo}: los pesos se renormalizan para cubrir 0--1.
+  \item \textbf{Historial para anomalías}: el z-score necesita al menos 60 minutos de datos;
+        un host nuevo tiene anomalía 0 durante su primera hora (importante al preparar la
+        demo).
+  \item \textbf{\code{last_seen_at}}: es la hora de recepción en el servidor, no la del
+        recolector, para que relojes desfasados o lotes atrasados no afecten el estado.
+  \item \textbf{Producción}: el backend importa \code{ml/} desde un volumen; para la Fase 9
+        hay que incluirlo en la imagen.
+\end{itemize}
+
+\subsection{Próximos pasos}
+
+\begin{enumerate}
+  \item Conectar el frontend a la API (hito del 25 de octubre).
+  \item Generar el dataset histórico con los escenarios y entrenar el modelo v1 (IsolationForest
+        + RandomForest) siguiendo el contrato de artefacto descrito.
+  \item Registrar el modelo en \code{model_registry} y validar la demo con el escenario
+        \code{degradation}.
+  \item Preparar \code{docker-compose.prod.yml} con Nginx y secretos de producción.
+\end{enumerate}
+
+\end{document}

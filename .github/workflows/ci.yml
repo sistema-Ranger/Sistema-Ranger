@@ -1,0 +1,60 @@
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ranger
+          POSTGRES_PASSWORD: ranger_ci
+          POSTGRES_DB: ranger
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ranger -d ranger"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Valores solo para CI (no son secretos de ningún entorno real)
+      APP_ENV: ci
+      DATABASE_URL: postgresql+psycopg://ranger:ranger_ci@localhost:5432/ranger
+      JWT_SECRET: ci_only_jwt_secret
+      COLLECTOR_API_KEY: ci_only_collector_key
+      ADMIN_EMAIL: admin@ranger.local
+      ADMIN_PASSWORD: ci_only_admin_pass
+      MODEL_DIR: ${{ github.workspace }}/ml/models
+      PYTHONPATH: ${{ github.workspace }}/BACK:${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: BACK/requirements.txt
+
+      - name: Instalar dependencias
+        run: pip install -r BACK/requirements.txt
+
+      - name: Ruff
+        run: |
+          ruff format --check .
+          ruff check .
+
+      - name: Migraciones
+        working-directory: BACK
+        run: alembic upgrade head
+
+      - name: Pytest
+        run: pytest TEST -q --cov=app --cov=ml.src --cov-report=term-missing:skip-covered
