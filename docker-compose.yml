@@ -1,0 +1,66 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ranger-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./DB/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      retries: 10
+
+  backend:
+    build: ./BACK
+    container_name: ranger-backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./BACK/app:/code/app
+      - ./BACK/alembic:/code/alembic
+      - ./ml:/code/ml
+      - ./TEST:/code/TEST
+      - ./COLLECTOR:/code/COLLECTOR:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: ./BACK
+    container_name: ranger-worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    command: ["python", "-m", "app.worker.scheduler"]
+    volumes:
+      - ./BACK/app:/code/app
+      - ./ml:/code/ml
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  collector:
+    build: ./COLLECTOR
+    container_name: ranger-collector
+    environment:
+      API_URL: http://backend:8000/api/v1
+      COLLECTOR_API_KEY: ${COLLECTOR_API_KEY}
+      COLLECT_INTERVAL: ${COLLECT_INTERVAL:-10}
+      HOSTNAME_OVERRIDE: ${COLLECTOR_HOSTNAME:-dev-container}
+      SCENARIO: ${COLLECTOR_SCENARIO:-normal}
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
