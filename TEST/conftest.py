@@ -3,6 +3,7 @@
 
 import sys
 from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
