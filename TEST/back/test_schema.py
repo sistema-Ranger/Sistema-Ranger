@@ -1,9 +1,9 @@
 # TEST/back/test_schema.py
-from alembic.autogenerate import compare_metadata
-from alembic.migration import MigrationContext
 from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.orm import Session
 
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
 from app.config import get_settings
 from app.database import Base
 from app.models import AlertRule, User, UserRole

@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     model_dir: str = "/code/ml/models"
     alert_cooldown_minutes: int = 15
     collect_interval: int = 10
-    max_batch_size: int = 500
 
     @property
     def cors_origin_list(self) -> list[str]:

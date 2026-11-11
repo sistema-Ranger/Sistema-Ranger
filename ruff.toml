@@ -1,7 +1,12 @@
 line-length = 100
 target-version = "py311"
+src = ["BACK", "TEST", "COLLECTOR", "."]
+extend-exclude = ["BACK/alembic/versions", "FRONT"]
 
 [lint]
 select = ["E", "F", "I", "UP", "B"]
 # B008: FastAPI usa Depends()/Query() como valor por defecto
 ignore = ["B008"]
+
+[lint.isort]
+known-first-party = ["app", "ml", "conftest", "factories", "scenarios"]
