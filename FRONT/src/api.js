@@ -48,6 +48,18 @@ async function request(path, { method = "GET", body, form } = {}) {
 export const api = {
   login: (email, password) => request("/auth/login", { method: "POST", form: { username: email, password } }),
   me: () => request("/auth/me"),
+  hosts: {
+    list: ({ size = 500 } = {}) => request(`/hosts?size=${size}`),
+    create: (body) => request("/hosts", { method: "POST", body }),
+    update: (id, body) => request(`/hosts/${id}`, { method: "PATCH", body }),
+    deactivate: (id) => request(`/hosts/${id}`, { method: "DELETE" }),
+  },
+  rules: {
+    list: () => request("/alert-rules"),
+    create: (body) => request("/alert-rules", { method: "POST", body }),
+    update: (id, body) => request(`/alert-rules/${id}`, { method: "PATCH", body }),
+    remove: (id) => request(`/alert-rules/${id}`, { method: "DELETE" }),
+  },
   users: {
     list: (page = 1, size = 50) => request(`/users?page=${page}&size=${size}`),
     create: (body) => request("/users", { method: "POST", body }),

@@ -91,3 +91,12 @@ td select { min-width: 150px; }
   h2 { font-size: 1.6rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.actions { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; }
+.toolbar { display: flex; gap: 1rem; align-items: center; margin-bottom: .75rem; flex-wrap: wrap; }
+.toolbar input:not([type]) { max-width: 320px; }
+label.check { display: flex; align-items: center; gap: .4rem; font-size: .85rem; }
+label.check input, td input[type="checkbox"] { width: auto; }
+
+.tabs { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+button.ghost.on { background: var(--accent); color: #fff; border-color: var(--accent); }
