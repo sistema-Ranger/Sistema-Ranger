@@ -1,8 +1,14 @@
 import { Navigate, NavLink, Outlet, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth";
 import Dashboard from "./pages/Dashboard";
+import Alerts from "./pages/Alerts";
+import History from "./pages/History";
+import Hosts from "./pages/Hosts";
 import Login from "./pages/Login";
+import Logs from "./pages/Logs";
 import Metrics from "./pages/Metrics";
+import Predictions from "./pages/Predictions";
+import Rules from "./pages/Rules";
 import Users, { ROLES } from "./pages/Users";
 
 function Guard({ roles }) {
@@ -27,7 +33,12 @@ function Layout() {
         <nav>
           <NavLink to="/" end>Dashboard</NavLink>
           <NavLink to="/metricas">Métricas</NavLink>
-          {["Logs y eventos", "Predicciones", "Alertas", "Historial"].map((t) => <span key={t} className="soon" title="Próximamente">{t}</span>)}
+          <NavLink to="/hosts">Hosts</NavLink>
+          <NavLink to="/reglas">Reglas de alerta</NavLink>
+          <NavLink to="/logs">Logs y eventos</NavLink>
+          <NavLink to="/predicciones">Predicciones</NavLink>
+          <NavLink to="/alertas">Alertas</NavLink>
+          <NavLink to="/historial">Historial</NavLink>
           {user.role === "admin" && <NavLink to="/usuarios">Usuarios</NavLink>}
         </nav>
         <div className="me">
@@ -49,6 +60,12 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="metricas" element={<Metrics />} />
+          <Route path="hosts" element={<Hosts />} />
+          <Route path="reglas" element={<Rules />} />
+          <Route path="logs" element={<Logs />} />
+          <Route path="predicciones" element={<Predictions />} />
+          <Route path="alertas" element={<Alerts />} />
+          <Route path="historial" element={<History />} />
           <Route element={<Guard roles={["admin"]} />}>
             <Route path="usuarios" element={<Users />} />
           </Route>
